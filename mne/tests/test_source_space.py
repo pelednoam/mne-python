@@ -20,6 +20,7 @@ from mne.surface import _accumulate_normals, _triangle_neighbors
 from mne.source_space import _get_mgz_header
 from mne.externals.six.moves import zip
 from mne.source_space import get_volume_labels_from_aseg, SourceSpaces
+from mne.io.constants import FIFF
 
 warnings.simplefilter('always')
 
@@ -555,17 +556,64 @@ def test_combine_source_spaces():
     label_names = get_volume_labels_from_aseg(aseg_fname)
     volume_labels = np.random.choice(label_names, 2)
 
-    src1 = setup_volume_source_space('sample', subjects_dir=subjects_dir,
+    # setup a surface source space
+    srf = setup_source_space('sample', subjects_dir=subjects_dir,
+                             overwrite=True)
+
+    # setup 2 volume source spaces
+    vol1 = setup_volume_source_space('sample', subjects_dir=subjects_dir,
                                      volume_label=volume_labels[0],
                                      mri=aseg_fname)
-    src2 = setup_volume_source_space('sample', subjects_dir=subjects_dir,
+    vol2 = setup_volume_source_space('sample', subjects_dir=subjects_dir,
                                      volume_label=volume_labels[1],
                                      mri=aseg_fname)
-    src = src1 + src2
 
+    # setup a discrete source space
+    rr = np.random.randint(0, 20, (100, 3)) * 1e-3
+    nn = np.zeros(rr.shape)
+    nn[:, -1] = 1
+    pos = {'rr': rr, 'nn': nn}
+    disc = setup_volume_source_space('sample', subjects_dir=subjects_dir,
+                                     pos=pos)
+
+    # combine source spaces
+    src = srf + vol1 + vol2 + disc
+
+    # test addition of source spaces
     assert_equal(type(src), SourceSpaces)
-    assert_equal(len(src), 2)
+    assert_equal(len(src), 5)
 
+    # test reading and writing
+    src_out_name = op.join(tempdir, 'temp-src.fif')
+    src.save(src_out_name)
+    src_from_file = read_source_spaces(src_out_name)
+    _compare_source_spaces(src, src_from_file, mode='approx')
+
+    # test that all source spaces are in MRI coordinates
+    coord_frames = np.array([s['coord_frame'] for s in src])
+    assert_true((coord_frames == FIFF.FIFFV_COORD_MRI).all())
+
+    # test errors for export_volume
+    image_fname = op.join(tempdir, 'temp-image.mgz')
+
+    # source spaces with no volume
+    assert_raises(ValueError, srf.export_volume, image_fname)
+
+    # unrecognized source type
+    disc2 = disc.copy()
+    disc2[0]['type'] = 'kitty'
+    src_unrecognized = src + disc2
+    assert_raises(ValueError, src_unrecognized.export_volume, image_fname)
+
+    # unrecognized file type
+    bad_image_fname = op.join(tempdir, 'temp-image.png')
+    assert_raises(ValueError, src.export_volume, bad_image_fname)
+
+    # mixed coordinate frames
+    disc3 = disc.copy()
+    disc3[0]['coord_frame'] = 10
+    src_mixed_coord = src + disc3
+    assert_raises(ValueError, src_mixed_coord.export_volume, image_fname)
 
 # The following code was used to generate small-src.fif.gz.
 # Unfortunately the C code bombs when trying to add source space distances,
