@@ -45,7 +45,7 @@ fid_fname_general = os.path.join(bem_dirname, "{head}-fiducials.fif")
 src_fname = os.path.join(bem_dirname, '{subject}-{spacing}-src.fif')
 fsaverage_fid_fname = os.path.join('{mne_root}',
         'share/mne/mne_analyze/fsaverage/fsaverage-fiducials.fif')
-fsaverage_fid_def_fname = os.path.join( \
+fsaverage_fid__fname = os.path.join( \
         os.path.dirname(__file__), 'fsaverage_fid.npy')
         
         
@@ -1168,7 +1168,7 @@ def scale_source_space(subject_to, src_name, subject_from=None, scale=None,
     write_source_spaces(dst, sss)
 
 
-def auto_calc_fid(subject, hs_points, do_attach, subjects_dir=None):
+def auto_calc_fid(subject, hs_points, do_attach, trans=None, subjects_dir=None):
     """Calculate the subject fiducial point using the fsaverage 
        inverse transformation
 
@@ -1182,6 +1182,9 @@ def auto_calc_fid(subject, hs_points, do_attach, subjects_dir=None):
         If True, after the transformation find the nearest point
         on the head shape for each fiducial point and choose it 
         as the new fiducial point
+    trans: dict | None
+        The subject transformation to talairach. If None, 
+        calculate it using _read_talxfm. 
     subjects_dir : None | str
         Override the SUBJECTS_DIR environment variable.
 
@@ -1194,7 +1197,8 @@ def auto_calc_fid(subject, hs_points, do_attach, subjects_dir=None):
     # read the fsaverage fid points
     sfaverage_fid = read_sfaverage_fid()
     # calc the inverse tranformation from fsaverage to the subject
-    trans = _read_talxfm(subject, subjects_dir)
+    if (trans is None):
+        trans = _read_talxfm(subject, subjects_dir)
     invert_trans = invert_transform(trans)
     fid_points = apply_trans(invert_trans['trans'],
         sfaverage_fid, move=False)   
@@ -1224,10 +1228,11 @@ def read_sfaverage_fid(mne_root=None):
         mne_root = get_config('MNE_ROOT', raise_error=False)
     # check if the get_config succeed
     if (mne_root is None):
-        # the mne_root isn't set, so load the
-        # default fsaverage fid points 
-        print('load fsverage fid from default')
-        points = np.load(fsaverage_fid_def_fname)
+        # the mne_root isn't set,
+        # set default fsaverage fid points 
+        fid_points = [[-0.08061612, -0.02908875, -0.04131077],
+                      [ 0.00146763,  0.08506715, -0.03483611],
+                      [ 0.08436285, -0.02850276, -0.04127743]]
     else:
         # load the fsaverage fid points from mne
         pts, _ = read_fiducials(fsaverage_fid_fname.format(

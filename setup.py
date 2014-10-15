@@ -100,6 +100,7 @@ if __name__ == "__main__":
                                 op.join('data', 'coil_def.dat'),
                                 op.join('data', 'helmets', '*.fif.gz'),
                                 op.join('data', 'FreeSurferColorLUT.txt'),
+                                op.join('data', 'fsaverage', '*.npy'),
                                 op.join('layouts', '*.lout'),
                                 op.join('layouts', '*.lay'),
                                 op.join('html', '*.js'),
