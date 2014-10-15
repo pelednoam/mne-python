@@ -25,12 +25,13 @@ from .label import read_label, Label
 from .source_space import (add_source_space_distances, read_source_spaces,
                            write_source_spaces)
 from .surface import (read_surface, write_surface, read_bem_surfaces,
-                      write_bem_surface)
+                      write_bem_surface, _compute_nearest, _normalize_vectors)
 from .transforms import rotation, rotation3d, scaling, translation
 from .utils import get_config, get_subjects_dir, logger, pformat
 from functools import reduce
 from .externals.six.moves import zip
-
+from .source_space import _read_talxfm
+from .transforms import apply_trans, invert_transform
 
 # some path templates
 trans_fname = os.path.join('{raw_dir}', '{subject}-trans.fif')
@@ -42,8 +43,12 @@ head_bem_fname = pformat(bem_fname, name='head')
 fid_fname = pformat(bem_fname, name='fiducials')
 fid_fname_general = os.path.join(bem_dirname, "{head}-fiducials.fif")
 src_fname = os.path.join(bem_dirname, '{subject}-{spacing}-src.fif')
-
-
+fsaverage_fid_fname = os.path.join('{mne_root}',
+        'share/mne/mne_analyze/fsaverage/fsaverage-fiducials.fif')
+fsaverage_fid_def_fname = os.path.join( \
+        os.path.dirname(__file__), 'fsaverage_fid.npy')
+        
+        
 def _make_writable(fname):
     os.chmod(fname, stat.S_IMODE(os.lstat(fname)[stat.ST_MODE]) | 128)  # write
 
@@ -1161,3 +1166,103 @@ def scale_source_space(subject_to, src_name, subject_from=None, scale=None,
         add_source_space_distances(sss, dist_limit, n_jobs)
 
     write_source_spaces(dst, sss)
+
+
+def auto_calc_fid(subject, hs_points, do_attach, subjects_dir=None):
+    """Calculate the subject fiducial point using the fsaverage 
+       inverse transformation
+
+    Parameters
+    ----------
+    subject : str
+        The subject's name
+    hs_points: array (n_points, 3)
+        The head shape point
+    do_attach: boolean
+        If True, after the transformation find the nearest point
+        on the head shape for each fiducial point and choose it 
+        as the new fiducial point
+    subjects_dir : None | str
+        Override the SUBJECTS_DIR environment variable.
+
+    Returns
+    -------
+    fid_points : array (3, 3)
+        The new fiducial points
+    """
+    subjects_dir = get_subjects_dir(subjects_dir, raise_error=True)
+    # read the fsaverage fid points
+    sfaverage_fid = read_sfaverage_fid()
+    # calc the inverse tranformation from fsaverage to the subject
+    trans = _read_talxfm(subject, subjects_dir)
+    invert_trans = invert_transform(trans)
+    fid_points = apply_trans(invert_trans['trans'],
+        sfaverage_fid, move=False)   
+    if (do_attach):
+        fid_points = find_nearest_fid_points(fid_points, hs_points)
+    return fid_points
+    
+
+def read_sfaverage_fid(mne_root=None):
+    """Read the fsaverage fiducial points. 
+    The function first looks in the MNE_ROOT directory. 
+    If this environment variable isn't defined, load 
+    the points from a pre-calculated numpy file
+
+    _parameters
+    ----------
+    mne_root : None | str
+        The mne root directory (only needed if MNE_ROOT is not specified as
+        environment variable).
+
+    Returns
+    -------
+    fid_points : array (3, 3)
+        The fsaverage fiducial points
+    """
+    if (mne_root is None):
+        mne_root = get_config('MNE_ROOT', raise_error=False)
+    # check if the get_config succeed
+    if (mne_root is None):
+        # the mne_root isn't set, so load the
+        # default fsaverage fid points 
+        print('load fsverage fid from default')
+        points = np.load(fsaverage_fid_def_fname)
+    else:
+        # load the fsaverage fid points from mne
+        pts, _ = read_fiducials(fsaverage_fid_fname.format(
+            mne_root=mne_root))
+        fid_points = np.zeros((len(pts), 3))
+        for k, pt in enumerate(pts):
+            fid_points[k, :] = pt['r']
+    return fid_points
+
+
+def find_nearest_fid_points(fid_points, hs_points):
+    """For each fiducial point, find the nearest point
+    from the head shape points 
+
+    _parameters
+    ----------
+    fid_points : array (3, 3)
+        The subject's fiducial points
+    hs_points : array (n_points, 3)
+        The subject's head shape points
+
+    Returns
+    -------
+    new_fid_points : array (3, 3)
+        The new fiducial points
+    """
+    # First copy both vectors, not to change to original value
+    norm_fid_points = fid_points.copy()
+    norm_hs_points = hs_points.copy()
+    # Normalize the vectors for _compute_nearest
+    _normalize_vectors(norm_fid_points)
+    _normalize_vectors(norm_hs_points)
+    nearest_points = []
+    for norm_fid_point in norm_fid_points:
+        idx = _compute_nearest(norm_hs_points, norm_fid_point)
+        nearest_points.append(idx[0])
+    new_fid_points = hs_points[nearest_points,:] 
+    return new_fid_points

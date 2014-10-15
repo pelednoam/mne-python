@@ -2,7 +2,7 @@
 
 # Authors: Christian Brodbeck <christianbrodbeck@nyu.edu>
 #
-# License: BSD (3-clause)
+# License: BSD (3-clause) 
 
 from ..utils import _check_mayavi_version
 

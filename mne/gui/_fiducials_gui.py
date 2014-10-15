@@ -17,7 +17,7 @@ try:
     from traits.api import (HasTraits, HasPrivateTraits, on_trait_change,
                             cached_property, DelegatesTo, Event, Instance,
                             Property, Array, Bool, Button, Enum)
-    from traitsui.api import HGroup, Item, VGroup, View
+    from traitsui.api import HGroup, Item, VGroup, View, Label
     from traitsui.menu import NoButtons
     from tvtk.pyface.scene_editor import SceneEditor
 except:
@@ -26,9 +26,10 @@ except:
     cached_property = on_trait_change = MayaviScene = MlabSceneModel = \
         Array = Bool = Button = DelegatesTo = Enum = Event = Instance = \
         Property = View = Item = HGroup = VGroup = SceneEditor = \
-        NoButtons = trait_wraith
+        NoButtons = trait_wraith = Label
 
-from ..coreg import fid_fname, fid_fname_general, head_bem_fname
+from ..coreg import (fid_fname, fid_fname_general, head_bem_fname, 
+                     auto_calc_fid)
 from ..io import write_fiducials
 from ..io.constants import FIFF
 from ..utils import get_subjects_dir, logger
@@ -214,10 +215,12 @@ class FiducialsPanel(HasPrivateTraits):
     save_as = Button(label='Save As...')
     save = Button(label='Save')
     reset_fid = Button(label="Reset to File")
+    find_auto = Button(label="Find fiducial points")
+    attach_fid = Bool(True, label="Attach points to the head shape")
 
     headview = Instance(HeadViewController)
     hsp_obj = Instance(SurfaceObject)
-
+#     hsp = Instance(np.ndarray)
     picker = Instance(object)
 
     # the layout of the dialog created
@@ -232,14 +235,26 @@ class FiducialsPanel(HasPrivateTraits):
                               Item('save_as', enabled_when='can_save_as'),
                               Item('reset_fid', enabled_when='can_reset'),
                               show_labels=False),
+                       HGroup(Item('find_auto', enabled_when='can_reset',
+                                   tooltip="Automatically find the fiducial points"),
+                              Item('attach_fid', enabled_when='can_reset'),
+                                   Label('Attach points to the head'),
+                              show_labels=False),
                        enabled_when="locked==False"))
 
     def __init__(self, *args, **kwargs):
         super(FiducialsPanel, self).__init__(*args, **kwargs)
         self.sync_trait('lpa', self, 'current_pos', mutual=True)
-
+    
     def _reset_fid_fired(self):
         self.model.reset = True
+
+    def _find_auto_fired(self):
+        points = auto_calc_fid(self.model.subject, self.hsp_obj.points, 
+                               self.attach_fid, self.model.subjects_dir)
+        self.lpa = points[0:1]
+        self.nasion = points[1:2]
+        self.rpa = points[2:3]
 
     def _save_fired(self):
         self.model.save()
