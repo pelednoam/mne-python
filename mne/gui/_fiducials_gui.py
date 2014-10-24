@@ -238,7 +238,7 @@ class FiducialsPanel(HasPrivateTraits):
                        HGroup(Item('find_auto', enabled_when='can_reset',
                                    tooltip="Automatically find the fiducial points"),
                               Item('attach_fid', enabled_when='can_reset'),
-                                   Label('Attach points to the head'),
+                                   Label('Improve nassion detection'),
                               show_labels=False),
                        enabled_when="locked==False"))
 
@@ -250,8 +250,11 @@ class FiducialsPanel(HasPrivateTraits):
         self.model.reset = True
 
     def _find_auto_fired(self):
+#         np.save('/home/noam/Dropbox/postDocHarvard/fiducialPointsDetection/src/files/dig_{}'.format(self.model.subject), np.vstack((self.model.lpa, self.model.nasion, self.model.rpa)))
+#         np.save('/home/noam/Dropbox/postDocHarvard/fiducialPointsDetection/src/files/hs_points_{}'.format(self.model.subject),self.hsp_obj.points)
+        
         points = auto_calc_fid(self.model.subject, self.hsp_obj.points, 
-                               self.attach_fid, self.model.subjects_dir)
+                               self.attach_fid, None, self.model.subjects_dir)
         self.lpa = points[0:1]
         self.nasion = points[1:2]
         self.rpa = points[2:3]

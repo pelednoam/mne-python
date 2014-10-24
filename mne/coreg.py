@@ -1168,7 +1168,8 @@ def scale_source_space(subject_to, src_name, subject_from=None, scale=None,
     write_source_spaces(dst, sss)
 
 
-def auto_calc_fid(subject, hs_points, do_attach, trans=None, subjects_dir=None):
+def auto_calc_fid(subject, hs_points, do_improve_nassion, 
+                  trans=None, subjects_dir=None):
     """Calculate the subject fiducial point using the fsaverage 
        inverse transformation
 
@@ -1193,7 +1194,7 @@ def auto_calc_fid(subject, hs_points, do_attach, trans=None, subjects_dir=None):
     fid_points : array (3, 3)
         The new fiducial points
     """
-    subjects_dir = get_subjects_dir(subjects_dir, raise_error=True)
+    subjects_dir = get_subjects_dir(subjects_dir, raise_error=False)
     # read the fsaverage fid points
     sfaverage_fid = read_sfaverage_fid()
     # calc the inverse tranformation from fsaverage to the subject
@@ -1201,9 +1202,13 @@ def auto_calc_fid(subject, hs_points, do_attach, trans=None, subjects_dir=None):
         trans = _read_talxfm(subject, subjects_dir)
     invert_trans = invert_transform(trans)
     fid_points = apply_trans(invert_trans['trans'],
-        sfaverage_fid, move=False)   
-    if (do_attach):
-        fid_points = find_nearest_fid_points(fid_points, hs_points)
+        sfaverage_fid, move=False)
+    fid_points = find_nearest_fid_points(fid_points, hs_points)
+    if (do_improve_nassion):
+        nassion = naisson_descent(fid_points, hs_points)
+        if (fid_points is not None):
+            fid_points[1, :] = nassion
+
     return fid_points
     
 
@@ -1243,15 +1248,15 @@ def read_sfaverage_fid(mne_root=None):
     return fid_points
 
 
-def find_nearest_fid_points(fid_points, hs_points):
+def find_nearest_fid_points(fid, hsp):
     """For each fiducial point, find the nearest point
     from the head shape points 
 
     _parameters
     ----------
-    fid_points : array (3, 3)
+    fid : array (3, 3)
         The subject's fiducial points
-    hs_points : array (n_points, 3)
+    hsp : array (n_points, 3)
         The subject's head shape points
 
     Returns
@@ -1259,15 +1264,115 @@ def find_nearest_fid_points(fid_points, hs_points):
     new_fid_points : array (3, 3)
         The new fiducial points
     """
+    _, _, anterior_unit, right_unit = calc_head_unit(fid)
+    lpa, nas, rpa = fid
+    new_lpa = move_until_cross_hsp(lpa, right_unit, hsp, h=0.01)
+    new_rpa = move_until_cross_hsp(rpa, right_unit, hsp, h=0.01)
+    new_nas = move_until_cross_hsp(nas, anterior_unit, hsp, h=0.01)
+    new_fid = np.vstack((new_lpa, new_nas, new_rpa))
+    return new_fid
+
+
+def calc_neighbors(point, cloud, neighbors_num, remove_point=False):
+    point = np.array([point])
+    distances = cdist(point, cloud)[0]
+    neighbors_idx = distances.argsort()[:neighbors_num]
+    neighbors = cloud[neighbors_idx]
+    if (remove_point):
+        neighbors = np.delete(neighbors, (0), axis=0)
+        neighbors_idx = np.delete(neighbors_idx, (0))
+    return neighbors, neighbors_idx
+
+
+def naisson_descent(fid,  hsp):
+    nas = fid[1, :]
+    neighbors, _ = calc_neighbors_dist(nas, hsp, 0.035)
+    origin, superior_unit, anterior_unit, _ = calc_head_unit(fid)
+    nose_top = find_nose_top(hsp, np.zeros((1, 3)), neighbors)
+    point = nose_top.copy()
+    points = [nose_top]
+    dists, dists2 = [], []
+    dist = cdist([origin], [point])[0]
+    dists.append(dist)
+    found_nassion = False
+    iter_num = 0
+    nassion = None
+    while (not found_nassion and iter_num < 10):
+        new_point = point + superior_unit * 0.01
+        new_point = move_until_cross_hsp(new_point, anterior_unit, neighbors, 0.005)
+        new_dist = cdist([origin], [new_point])[0]
+        if (new_dist >= dist and iter_num > 1):
+            nassion = points[-1]
+            found_nassion = True
+        else:
+            dist = new_dist
+            point = new_point.copy()
+            points.append(new_point)
+            dists.append(new_dist)
+        iter_num += 1
+
+    return nassion
+
+
+def calc_neighbors_dist(point, cloud, dist, remove_point=False):
+    point = np.array([point])
+    distances = cdist(point, cloud)[0]
+    neighbors_idx = distances < dist
+    neighbors = cloud[neighbors_idx]
+    if (remove_point):
+        neighbors = np.delete(neighbors, (0), axis=0)
+        neighbors_idx = np.delete(neighbors_idx, (0))
+    return neighbors, neighbors_idx
+
+
+def find_nose_top(hsp, origin, neighbors):
+    yaxis = neighbors[:, 1]
+    nose_top_idx = np.argmax(yaxis)
+    nose_top = neighbors[nose_top_idx, :]
+    return nose_top
+
+
+def move_until_cross_hsp(p, vec, hsp, h=0.01):
+    dist_decrease = True
+    min_dist = min(cdist([p], hsp)[0])
+    # Check direction
+    min_dist_up = min(cdist([p + vec * h], hsp)[0])
+    min_dist_down = min(cdist([p - vec * h], hsp)[0])
+    up = min_dist_up < min_dist_down
+    while (dist_decrease):
+        p = p + vec * h if up else p - vec * h
+        new_dist = min(cdist([p], hsp)[0])
+        dist_decrease = new_dist < min_dist
+        min_dist = new_dist
+
+    # Find the nearset ponint for p in hsp
+    new_point = find_nearest_points_to_hsp(p, hsp)[0]
+    return new_point
+
+
+def find_nearest_points_to_hsp(points, hsp):
+    if (points.ndim == 1):
+        points = np.array([points])
     # First copy both vectors, not to change to original value
-    norm_fid_points = fid_points.copy()
-    norm_hs_points = hs_points.copy()
+    norm_points = points.copy()
+    norm_hsp = hsp.copy()
     # Normalize the vectors for _compute_nearest
-    _normalize_vectors(norm_fid_points)
-    _normalize_vectors(norm_hs_points)
-    nearest_points = []
-    for norm_fid_point in norm_fid_points:
-        idx = _compute_nearest(norm_hs_points, norm_fid_point)
-        nearest_points.append(idx[0])
-    new_fid_points = hs_points[nearest_points,:] 
-    return new_fid_points
+    _normalize_vectors(norm_points)
+    _normalize_vectors(norm_hsp)
+    new_points = points.copy()
+    for i, p in enumerate(points):
+        idx = _compute_nearest(norm_hsp, p)[0]
+        new_points[i, :] = hsp[idx, :]
+    return new_points
+
+
+def calc_head_unit(fid):
+    lpa, nasion, rpa = fid
+    right = rpa - lpa
+    right_unit = right / norm(right)
+    origin = lpa + np.dot(nasion - lpa, right_unit) * right_unit
+    anterior = nasion - origin
+    anterior_unit = anterior / norm(anterior)
+    superior_unit = np.cross(right_unit, anterior_unit)
+    return origin, superior_unit, anterior_unit, right_unit
+
