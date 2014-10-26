@@ -1168,9 +1168,9 @@ def scale_source_space(subject_to, src_name, subject_from=None, scale=None,
     write_source_spaces(dst, sss)
 
 
-def auto_calc_fid(subject, hs_points, do_improve_nassion, 
+def auto_calc_fid(subject, hs_points, do_improve_nassion,
                   trans=None, subjects_dir=None):
-    """Calculate the subject fiducial point using the fsaverage 
+    """Calculate the subject fiducial point using the fsaverage
        inverse transformation
 
     Parameters
@@ -1181,11 +1181,11 @@ def auto_calc_fid(subject, hs_points, do_improve_nassion,
         The head shape point
     do_attach: boolean
         If True, after the transformation find the nearest point
-        on the head shape for each fiducial point and choose it 
+        on the head shape for each fiducial point and choose it
         as the new fiducial point
     trans: dict | None
-        The subject transformation to talairach. If None, 
-        calculate it using _read_talxfm. 
+        The subject transformation to talairach. If None,
+        calculate it using _read_talxfm.
     subjects_dir : None | str
         Override the SUBJECTS_DIR environment variable.
 
@@ -1201,24 +1201,25 @@ def auto_calc_fid(subject, hs_points, do_improve_nassion,
     if (trans is None):
         trans = _read_talxfm(subject, subjects_dir)
     invert_trans = invert_transform(trans)
-    fid_points = apply_trans(invert_trans['trans'],
-        sfaverage_fid, move=False)
-    fid_points = find_nearest_fid_points(fid_points, hs_points)
+    fid_points = apply_trans(invert_trans['trans'], sfaverage_fid, move=False)
+    # Attach the fid points on the head surface
+    fid_points = attach_fid_to_head_surface(fid_points, hs_points)
+    # Improve the nassion detection using the nasion_descent algorithm
     if (do_improve_nassion):
-        nassion = naisson_descent(fid_points, hs_points)
+        nassion = nasion_descent(fid_points, hs_points)
         if (fid_points is not None):
             fid_points[1, :] = nassion
 
     return fid_points
-    
+
 
 def read_sfaverage_fid(mne_root=None):
-    """Read the fsaverage fiducial points. 
-    The function first looks in the MNE_ROOT directory. 
-    If this environment variable isn't defined, load 
+    """Read the fsaverage fiducial points.
+    The function first looks in the MNE_ROOT directory.
+    If this environment variable isn't defined, load
     the points from a pre-calculated numpy file
 
-    _parameters
+    Parameters
     ----------
     mne_root : None | str
         The mne root directory (only needed if MNE_ROOT is not specified as
@@ -1234,10 +1235,10 @@ def read_sfaverage_fid(mne_root=None):
     # check if the get_config succeed
     if (mne_root is None):
         # the mne_root isn't set,
-        # set default fsaverage fid points 
+        # set default fsaverage fid points
         fid_points = [[-0.08061612, -0.02908875, -0.04131077],
-                      [ 0.00146763,  0.08506715, -0.03483611],
-                      [ 0.08436285, -0.02850276, -0.04127743]]
+                      [0.00146763,  0.08506715, -0.03483611],
+                      [0.08436285, -0.02850276, -0.04127743]]
     else:
         # load the fsaverage fid points from mne
         pts, _ = read_fiducials(fsaverage_fid_fname.format(
@@ -1248,14 +1249,17 @@ def read_sfaverage_fid(mne_root=None):
     return fid_points
 
 
-def find_nearest_fid_points(fid, hsp):
-    """For each fiducial point, find the nearest point
-    from the head shape points 
+def attach_fid_to_head_surface(fid, hsp):
+    """ For the LPA and RPA, move them on the LAP-RPA vector
+    until they cross the head shape. Then, find the nearest
+    point and set it as the LPA/RPA. Do the same for the
+    nassion, where its vector start in the origin - the
+    LPA-RPA center.
 
-    _parameters
+    Parameters
     ----------
     fid : array (3, 3)
-        The subject's fiducial points
+        The approximated fiducial points
     hsp : array (n_points, 3)
         The subject's head shape points
 
@@ -1264,43 +1268,61 @@ def find_nearest_fid_points(fid, hsp):
     new_fid_points : array (3, 3)
         The new fiducial points
     """
-    _, _, anterior_unit, right_unit = calc_head_unit(fid)
+    _, _, anterior_unit, rpa_lpa_unit = calc_head_unit(fid)
     lpa, nas, rpa = fid
-    new_lpa = move_until_cross_hsp(lpa, right_unit, hsp, h=0.01)
-    new_rpa = move_until_cross_hsp(rpa, right_unit, hsp, h=0.01)
+    new_lpa = move_until_cross_hsp(lpa, rpa_lpa_unit, hsp, h=0.01)
+    new_rpa = move_until_cross_hsp(rpa, rpa_lpa_unit, hsp, h=0.01)
     new_nas = move_until_cross_hsp(nas, anterior_unit, hsp, h=0.01)
     new_fid = np.vstack((new_lpa, new_nas, new_rpa))
     return new_fid
 
 
-def calc_neighbors(point, cloud, neighbors_num, remove_point=False):
-    point = np.array([point])
-    distances = cdist(point, cloud)[0]
-    neighbors_idx = distances.argsort()[:neighbors_num]
-    neighbors = cloud[neighbors_idx]
-    if (remove_point):
-        neighbors = np.delete(neighbors, (0), axis=0)
-        neighbors_idx = np.delete(neighbors_idx, (0))
-    return neighbors, neighbors_idx
+def nasion_descent(fid,  hsp, nas_neighbors_dist=0.035):
+    """ This function tries to find the nassion based on the
+    head shape points (hsp). It first finds the top of the nose,
+    then "slide" on the nose until it finds the nassion.
+    Every "slide" iteration includes 2 steps (staircase movement):
+    1) A step toward the superior vector
+    2) Move towards the anterior vector until a head shape point is found
 
+    Parameters
+    ----------
+    fid : array (3, 3)
+        The approximated fiducial points
+    hsp : array (n_points, 3)
+        The subject's head shape points
+    nas_neighbors_dist : float
+        The radius around the approximated nassion for finding
+        the top of the nose
 
-def naisson_descent(fid,  hsp):
+    Returns
+    -------
+    nassion : array (1, 3)
+        The new nassion point
+    """
     nas = fid[1, :]
-    neighbors, _ = calc_neighbors_dist(nas, hsp, 0.035)
+    neighbors, _ = calc_neighbors_dist(nas, hsp, nas_neighbors_dist)
+    nose_top = find_nose_top(hsp, neighbors)
     origin, superior_unit, anterior_unit, _ = calc_head_unit(fid)
-    nose_top = find_nose_top(hsp, np.zeros((1, 3)), neighbors)
     point = nose_top.copy()
+    # Saving the points for visualization mainly
     points = [nose_top]
-    dists, dists2 = [], []
+    dists = []
+    # The distances are computed from the head's origin
     dist = cdist([origin], [point])[0]
     dists.append(dist)
     found_nassion = False
     iter_num = 0
     nassion = None
     while (not found_nassion and iter_num < 10):
+        # Go one step toward the superior vector
         new_point = point + superior_unit * 0.01
-        new_point = move_until_cross_hsp(new_point, anterior_unit, neighbors, 0.005)
+        # Go towards the head shape (anterior vector)
+        new_point = move_until_cross_hsp(new_point, anterior_unit,
+                                         neighbors, 0.005)
         new_dist = cdist([origin], [new_point])[0]
+        # If the distance fomr the head's origin gets bigger, it a sign
+        # the algorithm has reached the nasion
         if (new_dist >= dist and iter_num > 1):
             nassion = points[-1]
             found_nassion = True
@@ -1315,6 +1337,27 @@ def naisson_descent(fid,  hsp):
 
 
 def calc_neighbors_dist(point, cloud, dist, remove_point=False):
+    """ Get all the points (neighbors) inside a radius
+
+    Parameters
+    ----------
+    point : array (1, 3)
+        The center point
+    cloud : array (n_points, 3)
+        The function finds the neighbors inside this cloud
+    dist : float
+        The search radius
+    remove_point: boolean
+        If true, the function will remove the center point from the points
+        it returns.
+
+    Returns
+    -------
+    neighbors : array (n_points, 3)
+        All the points inside the specific radius
+    neighbors_idx: array (n_points, 1)
+        The neighbors indices inside the cloud
+    """
     point = np.array([point])
     distances = cdist(point, cloud)[0]
     neighbors_idx = distances < dist
@@ -1325,7 +1368,29 @@ def calc_neighbors_dist(point, cloud, dist, remove_point=False):
     return neighbors, neighbors_idx
 
 
-def find_nose_top(hsp, origin, neighbors):
+def find_nose_top(hsp, neighbors):
+    """ Finds the top of the nose
+
+    Parameters
+    ----------
+    hsp : array (n_points, 3)
+        The subject's head shape points
+    neighbors : array (n_points, 3)
+        The points near the estimated nasion
+
+    Returns
+    -------
+    nose_top : array (1, 3)
+        The point in the head shape which is the top of the nose
+
+    Notes
+    -----
+    A more robust method will be finding the point in the neighbors
+    which its most far awat from the head's origin. However, this method
+    didn't work for every subject. The current method is based on the
+    assupmtion that in the nose area, the top of the nose y value will be
+    the highets. This assumption should be tested on more subjects.
+    """
     yaxis = neighbors[:, 1]
     nose_top_idx = np.argmax(yaxis)
     nose_top = neighbors[nose_top_idx, :]
@@ -1333,6 +1398,26 @@ def find_nose_top(hsp, origin, neighbors):
 
 
 def move_until_cross_hsp(p, vec, hsp, h=0.01):
+    """ Move a point according to a vector until it cross a point in
+    the head shape
+
+    Parameters
+    ----------
+    p : array (1, 3)
+        The point to move
+    vec : array (1, 3)
+        The movement direction
+    hsp : array (n_points, 3)
+        The subject's head shape points
+    h : float | 0.01
+        Step size
+
+    Returns
+    -------
+    new_point : array (1, 3)
+        A point from hsp which was the closest one after the point crossed
+        the head shape.
+    """
     dist_decrease = True
     min_dist = min(cdist([p], hsp)[0])
     # Check direction
@@ -1351,6 +1436,21 @@ def move_until_cross_hsp(p, vec, hsp, h=0.01):
 
 
 def find_nearest_points_to_hsp(points, hsp):
+    """ For each point, find the closest point in the head shape
+
+    Parameters
+    ----------
+    points : array (n_points, 3)
+        The origin points
+    hsp : array (n_points, 3)
+        The subject's head shape points
+
+    Returns
+    -------
+    new_points : array (n_points, 3)
+        The closest point in hsp for each point in points
+    """
+    # If points is only one point, make it a matrix
     if (points.ndim == 1):
         points = np.array([points])
     # First copy both vectors, not to change to original value
@@ -1367,12 +1467,35 @@ def find_nearest_points_to_hsp(points, hsp):
 
 
 def calc_head_unit(fid):
+    """ Calculate the head vector units
+
+    Parameters
+    ----------
+    fid : array (3, 3)
+        The fiducial points
+
+    Returns
+    -------
+    origin : array (1, 3)
+        The point between lpa and rpa
+    superior_unit: array (1, 3)
+        The normal for the anterior_unit
+    anterior_unit: array (1, 3)
+        The vector between the nasion and the origin
+    rpa_lpa_unit: array (1, 3)
+        The unit vecor between rpa and lpa
+
+    Notes
+    -----
+    This code was taken from the function get_ras_to_neuromag_trans
+    It is reasonable to change get_ras_to_neuromag_trans so it'll call
+    this function
+    """
     lpa, nasion, rpa = fid
-    right = rpa - lpa
-    right_unit = right / norm(right)
-    origin = lpa + np.dot(nasion - lpa, right_unit) * right_unit
+    rpa_lpa = rpa - lpa
+    rpa_lpa_unit = rpa_lpa / norm(rpa_lpa)
+    origin = lpa + np.dot(nasion - lpa, rpa_lpa_unit) * rpa_lpa_unit
     anterior = nasion - origin
     anterior_unit = anterior / norm(anterior)
-    superior_unit = np.cross(right_unit, anterior_unit)
-    return origin, superior_unit, anterior_unit, right_unit
-
+    superior_unit = np.cross(rpa_lpa_unit, anterior_unit)
+    return origin, superior_unit, anterior_unit, rpa_lpa_unit
